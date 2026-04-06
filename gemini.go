@@ -133,8 +133,8 @@ func runChat(ctx context.Context, client *genai.Client, modelName string) {
 	fmt.Printf("%s\033[33m--- Gemini Pro Go v1.1 (%s) ---\033[0m\n", getPadding(), modelName)
 
 	for {
-		fmt.Print("\n\n\033[1A") // Spacer + Cursor Up
-		fmt.Print(getPadding() + "\033[36mYou > \033[0m")
+		// REMOVED: The \n\n\033[1A "floating" trick
+		fmt.Print("\n" + getPadding() + "\033[36mYou > \033[0m")
 
 		var fullInput []string
 		for {
@@ -142,7 +142,7 @@ func runChat(ctx context.Context, client *genai.Client, modelName string) {
 
 			if strings.HasSuffix(line, "\\") {
 				fullInput = append(fullInput, strings.TrimSuffix(line, "\\"))
-				fmt.Print(getPadding() + "\033[2m  ... \033[0m") // Visual hint
+				fmt.Print(getPadding() + "\033[2m  ... \033[0m")
 				continue
 			}
 
@@ -153,7 +153,7 @@ func runChat(ctx context.Context, client *genai.Client, modelName string) {
 		input := strings.Join(fullInput, "\n")
 
 		if strings.ToLower(input) == "exit" || strings.ToLower(input) == "quit" {
-			fmt.Printf("\n%s\033[33m[System] Bye!\033[0m\n", getPadding())
+			fmt.Printf("%s\033[33m[System] Bye!\033[0m\n", getPadding())
 			break
 		}
 
@@ -284,7 +284,8 @@ func handleStream(ctx context.Context, session *genai.ChatSession, input string,
 			}
 		}
 	}
-	fmt.Print("\n\n")
+
+	fmt.Print("\n")
 
 	if fullResponse.Len() > 0 {
 		*history = append(*history, HistoryEntry{Role: "user", Parts: []string{input}})
