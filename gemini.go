@@ -1,7 +1,7 @@
 /**
- * Gemini CLI - Version 1.0 (Go Edition)
- * - Ported from "The Vacuum" v4.1
- * - Optimized for terminal word-wrapping and table alignment.
+ * Gemini CLI - Version 1.1 (Go Edition)
+ * - Features: Chat, Model Listing (-l), Model Selection (-m)
+ * - Supports: Multi-line input with \, Word-wrapping, Table safety.
  */
 
 package main
@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -18,11 +19,12 @@ import (
 
 	"github.com/google/generative-ai-go/genai"
 	"golang.org/x/term"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
 const (
-	ModelName        = "gemini-3-flash-preview"
+	DefaultModel     = "gemini-3-flash-preview"
 	HistoryFile      = "chat_history.json"
 	MaxWidth         = 100
 	OffsetFactor     = 0.20
@@ -37,6 +39,15 @@ type HistoryEntry struct {
 var currentColumn = 0
 
 func main() {
+	// --- 1. Flag Definition ---
+	listFlag := flag.Bool("l", false, "List available models")
+	flag.BoolVar(listFlag, "list", false, "List available models")
+
+	modelFlag := flag.String("m", DefaultModel, "Specific model ID to use")
+	flag.StringVar(modelFlag, "model", DefaultModel, "Specific model ID to use")
+
+	flag.Parse()
+
 	ctx := context.Background()
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
@@ -51,7 +62,55 @@ func main() {
 	}
 	defer client.Close()
 
-	model := client.GenerativeModel(ModelName)
+	// --- 2. Route to List or Chat ---
+	if *listFlag {
+		listModels(ctx, client)
+		return
+	}
+
+	runChat(ctx, client, *modelFlag)
+}
+
+// --- Logic: Model Listing ---
+
+func listModels(ctx context.Context, client *genai.Client) {
+	padding := getPadding()
+	fmt.Printf("\n%s\033[33mFetching available Gemini models...\033[0m\n\n", padding)
+	fmt.Printf("%s%-35s %s\n", padding, "ID", "DISPLAY NAME")
+	fmt.Printf("%s%s\n", padding, strings.Repeat("-", 70))
+
+	iter := client.ListModels(ctx)
+	for {
+		m, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			break
+		}
+
+		// Filter for generation models
+		supportsGen := false
+		for _, method := range m.SupportedGenerationMethods {
+			if method == "generateContent" {
+				supportsGen = true
+				break
+			}
+		}
+
+		if supportsGen {
+			shortID := strings.TrimPrefix(m.Name, "models/")
+			fmt.Printf("%s\033[32m%-35s\033[0m %s\n", padding, shortID, m.DisplayName)
+		}
+	}
+	fmt.Println()
+}
+
+// --- Logic: Main Chat Loop ---
+
+func runChat(ctx context.Context, client *genai.Client, modelName string) {
+	model := client.GenerativeModel(modelName)
 	model.SystemInstruction = &genai.Content{
 		Parts: []genai.Part{genai.Text("You are a helpful, professional, and grounded AI assistant. Respond in the user's language.")},
 	}
@@ -71,24 +130,22 @@ func main() {
 		os.Exit(0)
 	}()
 
-	fmt.Printf("%s\033[33m--- Gemini Pro Go v1.0 (%s) ---\033[0m\n", getPadding(), ModelName)
+	fmt.Printf("%s\033[33m--- Gemini Pro Go v1.1 (%s) ---\033[0m\n", getPadding(), modelName)
 
 	for {
-		fmt.Print("\n\n\033[1A") // The "Vacuum" spacer + Cursor Up
+		fmt.Print("\n\n\033[1A") // Spacer + Cursor Up
 		fmt.Print(getPadding() + "\033[36mYou > \033[0m")
 
 		var fullInput []string
 		for {
 			line := readLine()
 
-			// If the line ends with a backslash, strip it and stay in the loop
 			if strings.HasSuffix(line, "\\") {
 				fullInput = append(fullInput, strings.TrimSuffix(line, "\\"))
-				fmt.Print(getPadding() + "      ") // Indent the next line of input
+				fmt.Print(getPadding() + "\033[2m  ... \033[0m") // Visual hint
 				continue
 			}
 
-			// Otherwise, add the final line and break to send
 			fullInput = append(fullInput, line)
 			break
 		}
@@ -127,7 +184,6 @@ func renderFormatted(text string, isDimmed bool, skipPadding bool) {
 		fmt.Print("\033[2m")
 	}
 
-	// Detect if this chunk contains structural elements like tables
 	isTable := strings.Contains(text, "|") || strings.Contains(text, "+-") || strings.Contains(text, "---")
 
 	lines := strings.Split(text, "\n")
@@ -191,7 +247,7 @@ func displayHistory(history []HistoryEntry) {
 			roleName = "You"
 		}
 		fmt.Printf("%s%s%s:\033[0m ", padding, roleColor, roleName)
-		currentColumn = 0 // Reset for history rendering
+		currentColumn = 0
 		if len(entry.Parts) > 0 {
 			renderFormatted(entry.Parts[0], true, true)
 		}
