@@ -1,7 +1,7 @@
 /**
- * Gemini CLI - Version 2.5
- * - Fixed: History is now correctly formatted (Colors, Bold, Wrap).
- * - Refactored: Centralized formatting logic in printFormatted().
+ * Gemini CLI - Version 2.6
+ * - Logic: Centralized formatting and word-wrap for stream and history.
+ * - Stability: Safe UTF-8/Emoji handling using runes.
  */
 
 package main
@@ -44,9 +44,10 @@ func main() {
 		return
 	}
 
+	// Initialize the Gemini client
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		fmt.Printf("Error creating client: %v\n", err)
 		return
 	}
 	defer client.Close()
@@ -56,6 +57,7 @@ func main() {
 
 func runChat(ctx context.Context, client *genai.Client, modelName string) {
 	model := client.GenerativeModel(modelName)
+	// Provide system instructions for formatting preferences
 	model.SystemInstruction = &genai.Content{
 		Parts: []genai.Part{genai.Text("Helpful AI. Use [31m Red, [32m Green, [33m Yellow, [34m Blue, [35m Magenta, [36m Cyan and Markdown.")},
 	}
@@ -66,7 +68,7 @@ func runChat(ctx context.Context, client *genai.Client, modelName string) {
 	session := model.StartChat()
 	session.History = convertToGenAIHistory(history)
 
-	fmt.Printf("%s\033[33m--- Gemini CLI v2.5 (%s) ---\033[0m\n", getPadding(), modelName)
+	fmt.Printf("%s\033[33m--- Gemini CLI v2.6 (%s) ---\033[0m\n", getPadding(), modelName)
 
 	for {
 		fmt.Print("\n" + getPadding() + "\033[36mYou > \033[0m")
@@ -78,7 +80,7 @@ func runChat(ctx context.Context, client *genai.Client, modelName string) {
 	}
 }
 
-// printFormatted übernimmt das schicke Rendering für Stream UND History
+// printFormatted handles the rendering logic for both live stream and history playback
 func printFormatted(text string, indent string) {
 	buffer := ""
 	boldActive, italicActive := false, false
@@ -88,6 +90,7 @@ func printFormatted(text string, indent string) {
 	for i := 0; i < len(runes); i++ {
 		char := runes[i]
 
+		// Handle manual newlines from the model
 		if char == '\n' {
 			fmt.Print("\n" + indent)
 			lineLength = 0
@@ -96,27 +99,29 @@ func printFormatted(text string, indent string) {
 
 		buffer += string(char)
 
-		// 1. Farben
+		// Process ANSI Color Sequences (formatted as [XXm)
 		if strings.HasPrefix(buffer, "[") && strings.HasSuffix(buffer, "m") {
 			fmt.Print("\033" + buffer)
 			buffer = ""
 			continue
 		}
 
-		// 2. Markdown
+		// Process Markdown Formatting (Bold and Italic)
 		if buffer == "**" {
 			if !boldActive { fmt.Print("\033[1m"); boldActive = true } else { fmt.Print("\033[22m"); boldActive = false }
 			buffer = ""
 			continue
 		} else if buffer == "*" {
+			// Lookahead check to distinguish between * and **
 			if i+1 < len(runes) && runes[i+1] == '*' { continue }
 			if !italicActive { fmt.Print("\033[3m"); italicActive = true } else { fmt.Print("\033[23m"); italicActive = false }
 			buffer = ""
 			continue
 		}
 
-		// 3. Output & Wrap
+		// Text output with Word-Wrap logic
 		if len(buffer) > 0 && !strings.HasPrefix(buffer, "[") && !strings.HasPrefix(buffer, "*") {
+			// Wrap at space/tab if the 120 character limit is reached
 			if lineLength >= MaxLineChars && (char == ' ' || char == '\t') {
 				fmt.Print("\n" + indent)
 				lineLength = 0
@@ -127,23 +132,19 @@ func printFormatted(text string, indent string) {
 			buffer = ""
 		}
 	}
-	fmt.Print("\033[0m") // Reset am Ende jeder Nachricht
+	fmt.Print("\033[0m") // Reset formatting at the end of the message
 }
 
 func handleStream(ctx context.Context, session *genai.ChatSession, input string, history *[]HistoryEntry) {
 	p := getPadding()
-	indent := p + "        "
+	indent := p + "        " // Alignment offset for "Gemini: " label
 	fmt.Printf("\n%s\033[35m[Thinking...]\033[0m", p)
 	
 	iter := session.SendMessageStream(ctx, genai.Text(input))
-	fmt.Print("\r\033[K") 
+	fmt.Print("\r\033[K") // Clear the [Thinking...] line
 	fmt.Printf("%s\033[35mGemini:\033[0m ", p)
 	
 	var fullResponse strings.Builder
-	// Wir streamen jetzt einfach den Text in den Builder und rufen für die Anzeige 
-	// eine leicht modifizierte Version unserer Logik auf (oder nutzen den Builder am Ende)
-	// Für echtes Live-Streaming bauen wir die Logik hier direkt ein:
-	
 	boldActive, italicActive := false, false
 	lineLength := 0
 	buffer := ""
@@ -167,9 +168,12 @@ func handleStream(ctx context.Context, session *genai.ChatSession, input string,
 								fmt.Print("\n" + indent); lineLength = 0; continue
 							}
 							buffer += string(char)
+							
+							// Color check
 							if strings.HasPrefix(buffer, "[") && strings.HasSuffix(buffer, "m") {
 								fmt.Print("\033" + buffer); buffer = ""; continue
 							}
+							// Markdown check
 							if buffer == "**" {
 								if !boldActive { fmt.Print("\033[1m"); boldActive = true } else { fmt.Print("\033[22m"); boldActive = false }
 								buffer = ""; continue
@@ -178,6 +182,7 @@ func handleStream(ctx context.Context, session *genai.ChatSession, input string,
 								if !italicActive { fmt.Print("\033[3m"); italicActive = true } else { fmt.Print("\033[23m"); italicActive = false }
 								buffer = ""; continue
 							}
+							// Visible char output
 							if len(buffer) > 0 && !strings.HasPrefix(buffer, "[") && !strings.HasPrefix(buffer, "*") {
 								if lineLength >= MaxLineChars && (char == ' ' || char == '\t') {
 									fmt.Print("\n" + indent); lineLength = 0
@@ -194,9 +199,21 @@ func handleStream(ctx context.Context, session *genai.ChatSession, input string,
 	}
 	fmt.Println()
 	
+	// Save the interaction to history
 	*history = append(*history, HistoryEntry{Role: "user", Parts: []string{input}})
 	*history = append(*history, HistoryEntry{Role: "model", Parts: []string{fullResponse.String()}})
 	saveHistory(*history)
+}
+
+// --- UTILITIES ---
+
+// getPadding calculates left margin based on terminal width and the 120-char block
+func getPadding() string {
+	w, _, _ := term.GetSize(int(os.Stdout.Fd()))
+	if w <= 0 { w = 140 }
+	p := int(float64(w-MaxLineChars-10) * 0.1)
+	if p < 0 { p = 0 }
+	return strings.Repeat(" ", p)
 }
 
 func displayHistory(history []HistoryEntry) {
@@ -211,16 +228,6 @@ func displayHistory(history []HistoryEntry) {
 			fmt.Println()
 		}
 	}
-}
-
-// --- RESTLICHE HELPER BLEIBEN GLEICH ---
-
-func getPadding() string {
-	w, _, _ := term.GetSize(int(os.Stdout.Fd()))
-	if w <= 0 { w = 140 }
-	p := int(float64(w-MaxLineChars-10) * 0.1)
-	if p < 0 { p = 0 }
-	return strings.Repeat(" ", p)
 }
 
 func readLine() string {
