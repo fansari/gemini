@@ -188,6 +188,7 @@ func renderFormatted(text string, isDimmed bool, skipPadding bool) {
 		fmt.Print("\033[2m")
 	}
 
+	// Handle tables separately: Check for pipes or horizontal lines
 	if strings.Contains(text, "|") || strings.Contains(text, "+-") {
 		lines := strings.Split(text, "\n")
 		for _, line := range lines {
@@ -196,10 +197,12 @@ func renderFormatted(text string, isDimmed bool, skipPadding bool) {
 		return
 	}
 
+	// Convert Markdown bold (**) to ANSI bold escape codes before processing
 	processedText := strings.ReplaceAll(text, "**", "\033[1m")
 
 	lines := strings.Split(processedText, "\n")
 	for i, line := range lines {
+		// Apply vertical spacing and padding
 		if i > 0 {
 			fmt.Print("\n" + padding)
 			currentColumn = 0
@@ -207,32 +210,41 @@ func renderFormatted(text string, isDimmed bool, skipPadding bool) {
 			fmt.Print(padding)
 		}
 
+		// Split by spaces but preserve them by using Split instead of Fields.
+		// This prevents words like "Da" and "du" from merging into "Dadu".
 		parts := strings.Split(line, " ")
 		for j, part := range parts {
+			// Calculate the visible length of the word by stripping hidden ANSI codes
 			visiblePart := stripANSI(part)
 			partLen := len(visiblePart)
 
+			// Wrap line if it exceeds MaxWidth
 			if currentColumn+partLen > MaxWidth && currentColumn > 0 {
 				fmt.Print("\n" + padding)
 				currentColumn = 0
 			}
 
+			// Output the word (including ANSI formatting)
 			fmt.Print(part)
 			currentColumn += partLen
 
+			// Re-insert the space that was removed by Split(" "), 
+			// unless it's the very last word of the line.
 			if j < len(parts)-1 {
 				fmt.Print(" ")
 				currentColumn++
 			}
 		}
 	}
-	fmt.Print("\033[0m") // Reset am Ende
+	// Always reset formatting at the end to prevent "bleeding" styles
+	fmt.Print("\033[0m")
 }
 
+// stripANSI removes common terminal escape sequences to get the actual visible string length.
 func stripANSI(str string) string {
-	s := strings.ReplaceAll(str, "\033[1m", "")
-	s = strings.ReplaceAll(s, "\033[0m", "")
-	s = strings.ReplaceAll(s, "\033[2m", "")
+	s := strings.ReplaceAll(str, "\033[1m", "") // Bold
+	s = strings.ReplaceAll(s, "\033[0m", "") // Reset
+	s = strings.ReplaceAll(s, "\033[2m", "") // Dimmed
 	return s
 }
 
