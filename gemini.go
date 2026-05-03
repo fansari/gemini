@@ -158,7 +158,11 @@ func runChat(ctx context.Context, client *genai.Client, modelName string) {
 		}
 
 		if input != "" {
-			handleStream(ctx, session, input, &history)
+		// Sanitize input to ensure it is valid UTF-8
+		// strings.ToValidUTF8 replaces invalid byte sequences with the second argument
+		sanitizedInput := strings.ToValidUTF8(input, "") 
+
+		handleStream(ctx, session, sanitizedInput, &history)
 		}
 	}
 }
@@ -184,53 +188,52 @@ func renderFormatted(text string, isDimmed bool, skipPadding bool) {
 		fmt.Print("\033[2m")
 	}
 
-	isTable := strings.Contains(text, "|") || strings.Contains(text, "+-") || strings.Contains(text, "---")
+	if strings.Contains(text, "|") || strings.Contains(text, "+-") {
+		lines := strings.Split(text, "\n")
+		for _, line := range lines {
+			fmt.Print(padding + line + "\n")
+		}
+		return
+	}
 
-	lines := strings.Split(text, "\n")
+	processedText := strings.ReplaceAll(text, "**", "\033[1m")
+
+	lines := strings.Split(processedText, "\n")
 	for i, line := range lines {
 		if i > 0 {
 			fmt.Print("\n" + padding)
 			currentColumn = 0
+		} else if !skipPadding {
+			fmt.Print(padding)
 		}
 
-		if isTable {
-			if currentColumn == 0 && !skipPadding {
-				fmt.Print(padding)
-			}
-			fmt.Print(line)
-			currentColumn += len(line)
-			continue
-		}
+		parts := strings.Split(line, " ")
+		for j, part := range parts {
+			visiblePart := stripANSI(part)
+			partLen := len(visiblePart)
 
-		words := strings.Fields(line)
-		for j, word := range words {
-			if currentColumn == 0 && !skipPadding && i == 0 {
-				fmt.Print(padding)
-			}
-
-			processed := strings.ReplaceAll(word, "**", "\033[1m")
-			wordLen := len(word)
-
-			if currentColumn+wordLen > MaxWidth && currentColumn > 0 {
+			if currentColumn+partLen > MaxWidth && currentColumn > 0 {
 				fmt.Print("\n" + padding)
 				currentColumn = 0
 			}
 
-			fmt.Print(processed)
-			currentColumn += wordLen
+			fmt.Print(part)
+			currentColumn += partLen
 
-			if j < len(words)-1 {
+			if j < len(parts)-1 {
 				fmt.Print(" ")
 				currentColumn++
 			}
 		}
 	}
+	fmt.Print("\033[0m") // Reset am Ende
+}
 
-	if strings.HasSuffix(text, " ") && !isTable {
-		fmt.Print(" ")
-		currentColumn++
-	}
-	fmt.Print("\033[0m")
+func stripANSI(str string) string {
+	s := strings.ReplaceAll(str, "\033[1m", "")
+	s = strings.ReplaceAll(s, "\033[0m", "")
+	s = strings.ReplaceAll(s, "\033[2m", "")
+	return s
 }
 
 func displayHistory(history []HistoryEntry) {
@@ -256,22 +259,36 @@ func displayHistory(history []HistoryEntry) {
 	fmt.Printf("%s\033[2m\033[33m------------------------------\033[0m\n\n", padding)
 }
 
+
 func handleStream(ctx context.Context, session *genai.ChatSession, input string, history *[]HistoryEntry) {
 	padding := getPadding()
 	fmt.Printf("\n%s\033[2m\033[35m[Thinking...]\033[0m", padding)
 
 	iter := session.SendMessageStream(ctx, genai.Text(input))
 
+	// Clear the thinking indicator before starting output
 	fmt.Print("\r\033[K")
 	fmt.Printf("%s\033[35mGemini:\033[0m ", padding)
 
 	currentColumn = 0
 	var fullResponse strings.Builder
+	
 	for {
 		resp, err := iter.Next()
 		if err != nil {
+			// Catch specific API errors like safety blocks or token limits
+			if err != iterator.Done {
+				fmt.Printf("\n%s\033[31m[API Error]: %v\033[0m\n", padding, err)
+			}
 			break
 		}
+
+		// Handle cases where the model returns no candidates due to safety filters
+		if len(resp.Candidates) == 0 {
+			fmt.Printf("\n%s\033[33m[System]: No response generated. This might be due to safety filters.\033[0m\n", padding)
+			break
+		}
+
 		for _, cand := range resp.Candidates {
 			if cand.Content != nil {
 				for _, part := range cand.Content.Parts {
@@ -287,6 +304,7 @@ func handleStream(ctx context.Context, session *genai.ChatSession, input string,
 
 	fmt.Print("\n")
 
+	// Only save to history if we actually received a response
 	if fullResponse.Len() > 0 {
 		*history = append(*history, HistoryEntry{Role: "user", Parts: []string{input}})
 		*history = append(*history, HistoryEntry{Role: "model", Parts: []string{fullResponse.String()}})
