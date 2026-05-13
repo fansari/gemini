@@ -1,7 +1,7 @@
 /**
  * gemini.js - v4.5 (Final Polish)
  * - Restored: Thinking indicator (Purple)
- * - Fixed: Safe overwrite to preserve layout
+ * - Fixed: Safe overwrite logic to preserve layout via \r + padding
  * - Added: Multi-line support via backslash (\)
  */
 
@@ -103,6 +103,8 @@ async function startChat() {
     const p = getPadding();
     const indent = p + "        ";
     const promptString = `${p}\x1b[36mYou > \x1b[0m`;
+
+    // Buffer for multi-line input
     let inputBuffer = "";
 
     history.forEach(entry => {
@@ -121,6 +123,7 @@ async function startChat() {
     const chat = model.startChat({ history });
 
     const promptUser = () => {
+        // Display multi-line prompt if buffer is active
         const currentPrompt = inputBuffer ? `${p}\x1b[33m    > \x1b[0m` : promptString;
         rl.setPrompt(currentPrompt);
         rl.prompt();
@@ -128,6 +131,7 @@ async function startChat() {
         rl.once('line', async (line) => {
             let trimmedLine = line.trim();
 
+            // Multi-line support via backslash
             if (trimmedLine.endsWith("\\")) {
                 inputBuffer += trimmedLine.slice(0, -1) + " ";
                 promptUser();
@@ -135,13 +139,13 @@ async function startChat() {
             }
 
             const input = inputBuffer + line;
-            inputBuffer = ""; 
+            inputBuffer = "";
 
             if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
                 process.exit(0);
             }
 
-            // Zeige Thinking an
+            // Display Thinking indicator
             process.stdout.write(`\n${p}\x1b[35m[Thinking...]\x1b[0m`);
 
             formatterState = { boldActive: false, italicActive: false, lineLength: 0, colorBuffer: "", isCollectingColor: false, markdownBuffer: "" };
@@ -149,9 +153,9 @@ async function startChat() {
 
             try {
                 const result = await chat.sendMessageStream(input);
-                
-                // Wir springen zum Anfang der Zeile (\r), schreiben das Padding p 
-                // und löschen dann den Thinking-Text mit \x1b[K
+
+                // Return to line start (\r), re-apply padding (p),
+                // clear old text (\x1b[K), and write "Gemini:"
                 process.stdout.write(`\r${p}\x1b[K\x1b[35mGemini:\x1b[0m `);
 
                 for await (const chunk of result.stream) {
