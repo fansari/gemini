@@ -1,7 +1,8 @@
 /**
  * gemini.js - v4.5 (Final Polish)
- * - Fixed: ANSI-Color "Bleeding" (no more visible '32m' or 'm' strings).
- * - Fixed: State-machine for multi-chunk escape sequences.
+ * - Restored: Thinking indicator (Purple)
+ * - Fixed: Safe overwrite to preserve layout
+ * - Added: Multi-line support via backslash (\)
  */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -30,7 +31,6 @@ const rl = readline.createInterface({
     terminal: true
 });
 
-// Persistence for the formatter state across chunks
 let formatterState = {
     boldActive: false,
     italicActive: false,
@@ -48,24 +48,18 @@ function getPadding() {
 
 function printFormatted(text, indent, state) {
     const chars = Array.from(text);
-
     for (let i = 0; i < chars.length; i++) {
         let char = chars[i];
-
-        // Handle Newlines
         if (char === '\n') {
             process.stdout.write("\n" + indent);
             state.lineLength = 0;
             continue;
         }
-
-        // Start collecting ANSI color sequence
         if (char === '[') {
             state.isCollectingColor = true;
             state.colorBuffer = "";
             continue;
         }
-
         if (state.isCollectingColor) {
             state.colorBuffer += char;
             if (char === 'm') {
@@ -75,8 +69,6 @@ function printFormatted(text, indent, state) {
             }
             continue;
         }
-
-        // Markdown Logic (Bold/Italic)
         if (char === '*') {
             state.markdownBuffer += '*';
             if (state.markdownBuffer === '**') {
@@ -84,7 +76,6 @@ function printFormatted(text, indent, state) {
                 state.boldActive = !state.boldActive;
                 state.markdownBuffer = "";
             } else {
-                // Lookahead check
                 if (i + 1 >= chars.length || chars[i+1] !== '*') {
                     process.stdout.write(state.italicActive ? "\x1b[23m" : "\x1b[3m");
                     state.italicActive = !state.italicActive;
@@ -93,8 +84,6 @@ function printFormatted(text, indent, state) {
             }
             continue;
         }
-
-        // Visible character output with Word-Wrap
         if (state.lineLength >= MAX_LINE_CHARS && (char === ' ' || char === '\t')) {
             process.stdout.write("\n" + indent);
             state.lineLength = 0;
@@ -114,8 +103,8 @@ async function startChat() {
     const p = getPadding();
     const indent = p + "        ";
     const promptString = `${p}\x1b[36mYou > \x1b[0m`;
+    let inputBuffer = "";
 
-    // History Playback
     history.forEach(entry => {
         let hState = { boldActive: false, italicActive: false, lineLength: 0, colorBuffer: "", isCollectingColor: false, markdownBuffer: "" };
         if (entry.role === "user") {
@@ -132,22 +121,39 @@ async function startChat() {
     const chat = model.startChat({ history });
 
     const promptUser = () => {
-        rl.setPrompt(promptString);
+        const currentPrompt = inputBuffer ? `${p}\x1b[33m    > \x1b[0m` : promptString;
+        rl.setPrompt(currentPrompt);
         rl.prompt();
 
-        rl.once('line', async (input) => {
+        rl.once('line', async (line) => {
+            let trimmedLine = line.trim();
+
+            if (trimmedLine.endsWith("\\")) {
+                inputBuffer += trimmedLine.slice(0, -1) + " ";
+                promptUser();
+                return;
+            }
+
+            const input = inputBuffer + line;
+            inputBuffer = ""; 
+
             if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
                 process.exit(0);
             }
 
-            process.stdout.write(`\n${p}\x1b[35mGemini:\x1b[0m `);
+            // Zeige Thinking an
+            process.stdout.write(`\n${p}\x1b[35m[Thinking...]\x1b[0m`);
 
-            // Reset state for new stream
             formatterState = { boldActive: false, italicActive: false, lineLength: 0, colorBuffer: "", isCollectingColor: false, markdownBuffer: "" };
             let fullResponse = "";
 
             try {
                 const result = await chat.sendMessageStream(input);
+                
+                // Wir springen zum Anfang der Zeile (\r), schreiben das Padding p 
+                // und löschen dann den Thinking-Text mit \x1b[K
+                process.stdout.write(`\r${p}\x1b[K\x1b[35mGemini:\x1b[0m `);
+
                 for await (const chunk of result.stream) {
                     const text = chunk.text();
                     fullResponse += text;
